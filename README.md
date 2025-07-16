@@ -1,12 +1,8 @@
 # python-otel-hello-world
 just doing some basic testing for otel instrumentation
 
+make sure you have Cloud Trace API enabled in the project you're running it in, and that the identity running it has permissions to write trace data
+
 ```
-export OTEL_PYTHON_LOGGING_AUTO_INSTRUMENTATION_ENABLED=true
-opentelemetry-instrument \
-    --traces_exporter console \
-    --metrics_exporter console \
-    --logs_exporter console \
-    --service_name test \
-    python app.py
+python app.py
 ```
