@@ -115,9 +115,13 @@ async def main():
     logger.info("Application starting...")
     # This creates a root span for the entire application execution
     with tracer.start_as_current_span("main_application_run") as main_span:
-        await wait_half_second()
-        await call_demo_endpoint()
-        main_span.set_attribute("app.status", "completed_successfully")
+        # Run both functions concurrently
+        logger.info("Running wait_half_second and call_demo_endpoint in parallel...")
+        await asyncio.gather(
+            wait_half_second(),
+            call_demo_endpoint()
+        )
+        main_span.set_attribute("app.status", "completed_parallel_tasks")
     logger.info("Application finished.")
 
 if __name__ == "__main__":
