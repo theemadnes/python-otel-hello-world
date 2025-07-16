@@ -1,7 +1,7 @@
-import httpx
 import asyncio
-import json
 import time
+import httpx
+import json
 import logging
 
 # OpenTelemetry Imports
@@ -12,15 +12,8 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.exporter.cloud_trace import CloudTraceSpanExporter
 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
-WAIT_TIME=0.5
-
-logging.basicConfig(
-    level=logging.INFO,  # Set the minimum level of messages to display (INFO, DEBUG, WARNING, ERROR, CRITICAL)
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    datefmt='%Y-%m-%d %H:%M:%S'
-)
-
-# Get a logger instance for this module (good practice)
+# --- Configure Logging ---
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 # --- Configure OpenTelemetry ---
@@ -54,39 +47,82 @@ def configure_opentelemetry():
 
     logger.info("OpenTelemetry configured successfully for Google Cloud Trace.")
 
-def just_waste_time():
-    time.sleep(WAIT_TIME)
-    logger.info(f"Slept for {WAIT_TIME} seconds")
+# Get a tracer from the configured provider
+tracer = trace.get_tracer(__name__)
 
-async def fetch_jsonplaceholder_post():
+@tracer.start_as_current_span("simulate_half_second_wait")
+async def wait_half_second():
     """
-    Fetches a single post from JSONPlaceholder using httpx in an async context.
+    A simple async function that waits for half a second.
+    This will be a custom span in the trace.
+    """
+    logger.info("Starting wait_half_second function...")
+    current_span = trace.get_current_span()
+    current_span.set_attribute("wait.duration.ms", 500)
+    await asyncio.sleep(0.5)
+    logger.info("Finished wait_half_second function.")
+
+@tracer.start_as_current_span("fetch_jsonplaceholder_post")
+async def call_demo_endpoint():
+    """
+    Uses httpx to call a demo JSON endpoint.
+    The httpx instrumentation will automatically create a child span for the HTTP call.
     """
     url = "https://jsonplaceholder.typicode.com/posts/1"
+    logger.info(f"Starting call_demo_endpoint function. Fetching from: {url}")
 
-    logger.info(f"Making GET request to: {url}")
+    current_span = trace.get_current_span()
+    current_span.set_attribute("http.target.url", url)
+
     try:
         async with httpx.AsyncClient() as client:
             response = await client.get(url)
+            response.raise_for_status() # Raise an exception for HTTP errors
 
-            # Raise an exception for bad status codes (4xx or 5xx)
-            response.raise_for_status()
-
-            # The response.json() method automatically parses the JSON
             post_data = response.json()
+            logger.info("Successfully fetched data from demo endpoint.")
+            logger.debug("Fetched data: %s", json.dumps(post_data, indent=2))
 
-            logger.info("--- Response Data ---")
-            logger.info(json.dumps(post_data, indent=2))
-            logger.info(f"Status Code: {response.status_code}")
-            logger.info(f"Content-Type: {response.headers.get('content-type')}")
+            current_span.set_attribute("http.status_code", response.status_code)
+            current_span.set_attribute("post.id", post_data.get("id"))
+            current_span.set_attribute("post.title", post_data.get("title"))
 
     except httpx.HTTPStatusError as e:
-        logger.info(f"HTTP error occurred: {e.response.status_code} - {e.response.text}")
+        logger.error(
+            "HTTP error occurred: %s - %s",
+            e.response.status_code, e.response.text, exc_info=True
+        )
+        current_span.set_status(trace.Status(trace.StatusCode.ERROR,
+                                              f"HTTP Error: {e.response.status_code}"))
     except httpx.RequestError as e:
-        logger.info(f"An error occurred while requesting {e.request.url!r}: {e}")
+        logger.error("Network error occurred: %s", e, exc_info=True)
+        current_span.set_status(trace.Status(trace.StatusCode.ERROR,
+                                              f"Network Error: {e}"))
+    except json.JSONDecodeError as e:
+        logger.error("JSON decoding error: %s", e, exc_info=True)
+        current_span.set_status(trace.Status(trace.StatusCode.ERROR,
+                                              f"JSON Decode Error: {e}"))
     except Exception as e:
-        logger.info(f"An unexpected error occurred: {e}")
+        logger.critical("An unexpected error occurred: %s", e, exc_info=True)
+        current_span.set_status(trace.Status(trace.StatusCode.ERROR,
+                                              f"Unexpected Error: {e}"))
+
+async def main():
+    """
+    Main function to orchestrate the operations.
+    This will also be a top-level span.
+    """
+    logger.info("Application starting...")
+    # This creates a root span for the entire application execution
+    with tracer.start_as_current_span("main_application_run") as main_span:
+        await wait_half_second()
+        await call_demo_endpoint()
+        main_span.set_attribute("app.status", "completed_successfully")
+    logger.info("Application finished.")
 
 if __name__ == "__main__":
-    just_waste_time()
-    asyncio.run(fetch_jsonplaceholder_post())
+    configure_opentelemetry()
+    asyncio.run(main())
+    # It's important to shut down the provider to ensure all buffered spans are sent
+    trace.get_tracer_provider().shutdown()
+    logger.info("OpenTelemetry provider shut down.")
